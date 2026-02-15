@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Your Friend AI</title>
@@ -141,10 +141,6 @@
       background:rgba(46,135,255,.25);
       border-color:rgba(46,135,255,.35);
     }
-    .meta{
-      font-size:11px;color:var(--muted);
-      margin-top:6px;
-    }
 
     footer{
       padding:14px;
@@ -173,6 +169,10 @@
       border:none;
       cursor:pointer;
     }
+    .send:disabled{
+      opacity:.6;
+      cursor:not-allowed;
+    }
     .mic{
       width:44px;height:44px;border-radius:16px;
       border:1px solid var(--border);
@@ -185,67 +185,6 @@
       background:rgba(46,135,255,.25);
       border-color:rgba(46,135,255,.35);
     }
-        *{box-sizing:border-box}
-  html,body{height:100%; margin:0;}
-  body{
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
-    background:#0b1520;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    padding:12px;
-  }
-
-  .app{
-    width:min(520px, 100%);        /* desktop max, mobile full */
-    height:min(92vh, 760px);       /* mobile friendly height */
-    background:#0f1c2b;
-    border-radius:18px;
-    display:flex;
-    flex-direction:column;
-    overflow:hidden;
-  }
-
-  .messages{
-    flex:1;
-    overflow-y:auto;
-    padding:12px;
-  }
-
-  .inputBar{
-    display:flex;
-    gap:10px;
-    padding:12px;
-    background:rgba(0,0,0,0.15);
-  }
-
-  .inputBar input{
-    flex:1;
-    padding:14px 14px;
-    border-radius:999px;
-    border:1px solid rgba(255,255,255,0.15);
-    background:#0b1520;
-    color:#fff;
-    font-size:16px; /* ✅ prevents iPhone zoom on focus */
-    outline:none;
-  }
-
-  .inputBar button{
-    padding:12px 16px;
-    border-radius:999px;
-    border:none;
-    background:#19c37d;
-    color:#001b10;
-    font-weight:700;
-  }
-
-  /* ✅ Extra tweaks for small phones */
-  @media (max-width: 420px){
-    body{padding:8px;}
-    .app{height:94vh; border-radius:14px;}
-    .messages{padding:10px;}
-    .inputBar{padding:10px; gap:8px;}
-  }
   </style>
 </head>
 
@@ -276,8 +215,7 @@
     </footer>
   </div>
 
-  <!-- OPTIONAL: sound effects (add these files if you want) -->
-  <!-- Put files in: static/sfx/laugh.mp3 and static/sfx/kiss.mp3 -->
+  <!-- OPTIONAL SFX -->
   <audio id="sfxLaugh" src="/static/sfx/laugh.mp3" preload="auto"></audio>
   <audio id="sfxKiss"  src="/static/sfx/kiss.mp3" preload="auto"></audio>
 
@@ -292,7 +230,6 @@
 
     let voiceEnabled = true;
 
-    // ✅ Remove emojis ONLY for voice so it doesn't say emoji names
     function stripEmojisForVoice(text){
       return (text || "")
         .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
@@ -307,11 +244,35 @@
       div.textContent = text;
       chat.appendChild(div);
       chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function addLoading(text = "Generating image… ⏳"){
+      const div = document.createElement("div");
+      div.className = "bubble bot";
+      div.dataset.loading = "1";
+      div.textContent = text;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+      return div;
+    }
+
+    function replaceLoadingWithImage(loadingDiv, src){
+      if (!loadingDiv) return;
+      loadingDiv.textContent = "";
+
+      const img = document.createElement("img");
+      img.src = src;
+      img.style.maxWidth = "100%";
+      img.style.borderRadius = "12px";
+      img.style.marginTop = "5px";
+
+      loadingDiv.appendChild(img);
+      chat.scrollTop = chat.scrollHeight;
     }
 
     function playSfxIfNeeded(text){
       const t = (text || "").toLowerCase();
-
       if (t.includes("😂") || t.includes("🤣") || t.includes("haha") || t.includes("hehe")){
         document.getElementById("sfxLaugh")?.play().catch(()=>{});
       }
@@ -351,8 +312,39 @@
       addMsg(text, "user");
       msgInput.value = "";
 
+      const lower = text.toLowerCase();
+
+      // IMAGE requests
+      if (lower.includes("image") || lower.includes("picture") || lower.includes("photo")) {
+        const loadingDiv = addLoading("Generating image… ⏳");
+
+        sendBtn.disabled = true;
+        try{
+          const res = await fetch("/api/image", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ prompt: text })
+          });
+
+          const data = await res.json();
+
+          if (data.ok && data.b64){
+            const imgSrc = "data:image/png;base64," + data.b64;
+            replaceLoadingWithImage(loadingDiv, imgSrc);
+          } else {
+            loadingDiv.textContent = "Couldn't generate image 😔";
+          }
+        }catch(e){
+          loadingDiv.textContent = "Image generation failed 😔";
+        }finally{
+          sendBtn.disabled = false;
+        }
+        return;
+      }
+
+      // Normal chat
+      sendBtn.disabled = true;
       try{
-        // ✅ If your backend route is /api/chat, change this line:
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -365,17 +357,17 @@
         const reply = data.reply || "…";
         addMsg(reply, "bot");
 
-        // Optional SFX first
         playSfxIfNeeded(reply);
-
-        // Speak after adding
         speak(reply);
 
       }catch(e){
         addMsg("Server error. Try again.", "bot");
+      }finally{
+        sendBtn.disabled = false;
       }
     }
 
+    // Handlers (ONLY once)
     sendBtn.onclick = () => sendMessage(msgInput.value);
     msgInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") sendMessage(msgInput.value);
@@ -396,36 +388,83 @@
       window.speechSynthesis.cancel();
     };
 
-    // 🎤 Speech to text (mic)
-    let rec = null;
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition){
-      rec = new SpeechRecognition();
-      rec.lang = "en-US";
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
+    // Mic (speech to text)
+let rec = null;
+let isListening = false;
+let finalBuffer = "";
 
-      rec.onstart = () => { micBtn.classList.add("on"); voiceStatus.textContent = "Listening…"; };
-      rec.onend = () => { micBtn.classList.remove("on"); voiceStatus.textContent = voiceEnabled ? "Voice: ready" : "Voice: off"; };
-      rec.onerror = () => { micBtn.classList.remove("on"); voiceStatus.textContent = "Mic error"; };
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      rec.onresult = (e) => {
-        const transcript = e.results[0][0].transcript;
-        msgInput.value = transcript;
-        sendMessage(transcript);
-      };
+function setListeningUI(on){
+  if (on){
+    micBtn.classList.add("on");
+    voiceStatus.textContent = "Listening…";
+  } else {
+    micBtn.classList.remove("on");
+    voiceStatus.textContent = voiceEnabled ? "Voice: ready" : "Voice: off";
+  }
+}
 
-      micBtn.onclick = () => {
-        try { rec.start(); } catch {}
-      };
-    } else {
-      micBtn.disabled = true;
-      micBtn.title = "Mic not supported in this browser";
+function startRec(){
+  if (!rec || isListening) return;
+  finalBuffer = "";
+  msgInput.value = "";
+  try { rec.start(); } catch {}
+}
+
+function stopRecAndSend(){
+  if (!rec || !isListening) return;
+  try { rec.stop(); } catch {}
+  // send after a tiny delay so last words arrive
+  setTimeout(() => {
+    const toSend = (finalBuffer || msgInput.value || "").trim();
+    if (toSend){
+      msgInput.value = "";
+      sendMessage(toSend);
     }
+  }, 250);
+}
+
+if (SpeechRecognition){
+  rec = new SpeechRecognition();
+  rec.lang = "en-US";
+  rec.interimResults = true;
+  rec.continuous = true;
+
+  rec.onstart = () => { isListening = true; setListeningUI(true); };
+  rec.onend   = () => { isListening = false; setListeningUI(false); };
+
+  rec.onerror = () => { isListening = false; setListeningUI(false); };
+
+  rec.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++){
+      const txt = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalBuffer = (finalBuffer + " " + txt).trim();
+      else interim += txt;
+    }
+    msgInput.value = (finalBuffer + " " + interim).trim();
+  };
+
+  // ✅ Press & hold (mouse)
+  micBtn.addEventListener("mousedown", (e) => { e.preventDefault(); startRec(); });
+  window.addEventListener("mouseup", () => stopRecAndSend());
+
+  // ✅ Press & hold (touch/mobile)
+  micBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRec(); }, {passive:false});
+  window.addEventListener("touchend", () => stopRecAndSend());
+
+} else {
+  micBtn.disabled = true;
+  micBtn.title = "Mic not supported in this browser";
+}
+
+
+
+
 
     // Initial message
     addMsg("Heyy 🥰 I’m here for you… talk to me 💗", "bot");
-    // speak without emojis
     speak("Heyy I'm here for you, talk to me");
   </script>
 </body>

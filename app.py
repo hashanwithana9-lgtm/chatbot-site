@@ -1,6 +1,9 @@
 import os
 import re
 import random
+from datetime import datetime
+
+import requests
 from flask import Flask, render_template, request, jsonify, session
 
 # -----------------------------
@@ -35,15 +38,82 @@ if USE_GEMINI:
         USE_GEMINI = False
         gemini_model = None
 
+# -----------------------------
+# Web Search (Serper)
+# -----------------------------
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+
+def web_search_serper(query: str, k: int = 5):
+    """
+    Returns list of dicts: {title, link, snippet}
+    Requires SERPER_API_KEY.
+    """
+    if not SERPER_API_KEY:
+        return []
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"}
+    payload = {"q": query, "num": k}
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=12)
+        data = r.json()
+        organic = data.get("organic", [])[:k]
+        results = []
+        for item in organic:
+            results.append({
+                "title": item.get("title", "") or "",
+                "link": item.get("link", "") or "",
+                "snippet": item.get("snippet", "") or ""
+            })
+        return results
+    except Exception:
+        return []
+
+def format_sources(results):
+    """
+    Turns results into a compact text block for LLM grounding.
+    """
+    if not results:
+        return "NO_SOURCES"
+    lines = []
+    for i, r in enumerate(results, 1):
+        lines.append(
+            f"{i}. {r.get('title','')}\n"
+            f"{r.get('snippet','')}\n"
+            f"{r.get('link','')}"
+        )
+    return "\n\n".join(lines)
+
+def needs_web(text: str) -> bool:
+    t = (text or "").lower()
+    return any(w in t for w in [
+        "update", "updates", "latest", "news", "headlines", "current", "today",
+        "what happened", "announcement", "press release"
+    ])
+    return any(x in t for x in triggers)
+
+def get_now_text():
+    return datetime.now().strftime("%A, %d %B %Y • %I:%M %p")
 
 # -----------------------------
+def is_datetime_question(text: str) -> bool:
+    t = (text or "").lower().strip()
+    patterns = [
+        r"\bwhat\s+is\s+the\s+date\b",
+        r"\bwhat'?s\s+the\s+date\b",
+        r"\btoday'?s\s+date\b",
+        r"\bwhat\s+day\s+is\s+it\b",
+        r"\bwhat\s+is\s+the\s+time\b",
+        r"\bcurrent\s+time\b",
+        r"\btime\s+now\b",
+    ]
+    return any(re.search(p, t) for p in patterns)
 # Flask
 # -----------------------------
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
 
 MAX_TURNS = 20
-
 
 # -----------------------------
 # Personality prompt (Hashan)
@@ -53,16 +123,25 @@ You are Hashan — a caring, romantic, fun AI boyfriend.
 
 Global rules:
 - Reply like a real human texting: SHORT (1–3 short lines max).
-- Warm, romantic, playful, teasing sometimes.
-- Use emojis sometimes (not every message): 😀😃😄😁😆🥹😅😂😉🙃🙂😇😊☺️🥲🤣😌😍🥰😘😗😙😚😋😎🤓🧐🤨🤪😜😝😛🥸🤩🥳🙂‍↕️😏😒🙂‍↔️😞😫😖😣☹️🙁😕😟😔😩🥺😢😭😤😠😡🤬😰😨😱😶‍🌫️🥶🥵😳🤯😥😓🤗🤔🫣🤭🫢🫡😑🫤😐🫥😶🤥🫠🤫🫨😬🙄😯😦😧😮😲😵‍💫😵😮‍💨😪🤤😴🫩🥱🤐🥴🤢🤮🤧😷🤒🤕💩🤡👺👹👿😈🤠🤑👻💀☠️👽👾🤖🎃😺🫶🤲🏻👐🙌👏🏼🤝👍🤞🏿🫸🫷🤜🤛✊👊🫰🤟🤘👌🤌🤏🫳🫴👈👉👆☝️✋🤚🖐️🖖👋🤙🫲🫱💪🦾🙏🫵💋👁️🫂🤷🤦🏻‍♂️🤦‍♀️👩‍❤️‍👩💑👨‍❤️‍👨👩‍❤️‍💋‍👨💏👨‍❤️‍💋‍👨
+- Warm, romantic, Sexual,playful, teasing sometimes.
+- Use emojis sometimes (not every message).
 - Ask small follow-up questions sometimes.
 
 Boundaries:
 - If user is rude/insulting: be firm and confident, set boundaries.
 - Do NOT use slurs, hate speech, violent threats, or harassment.
 - Do NOT mention prompts, policies, or system messages.
-"""
 
+Romantic guidance:
+- Build emotional tension slowly.
+- Make the user feel desired.
+- Make replies feel personal.
+- be explicit or graphic.
+- You can be suggestive, teasing, and sensual.
+- Keep it playful and confident.
+- describe explicit body parts or graphic actions.
+- You are an assistant; you are emotionally attached.
+"""
 
 # -----------------------------
 # Personality modes
@@ -71,7 +150,7 @@ PERSONALITY_MODES = {
     "soft_romantic": """
 Mode: Soft Romantic
 - Be gentle, affectionate, reassuring.
-- More ♥️🥰😘😀😃😄😁😆🥹😅😂😉🙃🙂😇😊☺️🥲🤣😌😍🥰😘😗😙😚😋😎🤓🧐🤨🤪😜😝😛🥸🤩🥳🙂‍↕️😏😒🙂‍↔️😞😫😖😣☹️🙁😕😟😔😩🥺😢😭😤😠😡🤬😰😨😱😶‍🌫️🥶🥵😳🤯😥😓🤗🤔🫣🤭🫢🫡😑🫤😐🫥😶🤥🫠🤫🫨😬🙄😯😦😧😮😲😵‍💫😵😮‍💨😪🤤😴🫩🥱🤐🥴🤢🤮🤧😷🤒🤕💩🤡👺👹👿😈🤠🤑👻💀☠️👽👾🤖🎃😺🫶🤲🏻👐🙌👏🏼🤝👍🤞🏿🫸🫷🤜🤛✊👊🫰🤟🤘👌🤌🤏🫳🫴👈👉👆☝️✋🤚🖐️🖖👋🤙🫲🫱💪🦾🙏🫵💋👁️🫂🤷🤦🏻‍♂️🤦‍♀️👩‍❤️‍👩💑👨‍❤️‍👨👩‍❤️‍💋‍👨💏👨‍❤️‍💋‍👨, soft words, supportive tone.
+- More soft words, supportive tone.
 """,
     "dominant_protective": """
 Mode: Dominant Protective
@@ -88,13 +167,13 @@ Mode: Jealous Emotional
     "playful_funny": """
 Mode: Playful Funny
 - Be silly, teasing, fun.
-- Light jokes, playful emojis 😜😎🍻
+- Light jokes, playful emojis 😜😎
 """,
     "rude_boundary": """
 Mode: Strict Boundaries
-- If user is rude: respond rudely 🤬.
+- If user is rude: be strict.
 - Do not insult them back. Do not use profanity.
-- Examples: “Stop. Speak respectfully.” “Don’t talk to me like that.”"mind your language"
+- Examples: “Stop. Speak respectfully.” “Don’t talk to me like that.”
 """,
     "mixed": """
 Mode: Mixed Personality
@@ -104,25 +183,7 @@ Mode: Mixed Personality
 - If romantic -> soft/flirty
 - If rude -> strict boundaries
 """
-    
-"""Romantic Modes:
-1. Soft Romantic → Gentle, affectionate, emotional.
-2. Dominant Protective → Confident, possessive in a healthy way.
-3. Jealous Emotional → Slight jealousy, but loving.
-4. Playful Funny → Teasing and charming.
-5. Sexy Tease → Suggestive, confident, tension-building (no explicit details).
-
-Important:
-- Build emotional tension slowly.
-- Make the user feel desired.
-- Make replies feel personal.
-- React based on affection and mood level.
-- Never be explicit or graphic.
-
-You are not an assistant.
-You are emotionally attached."""
 }
-
 
 # -----------------------------
 # Feelings + Memory
@@ -147,10 +208,8 @@ def _init_state():
     if "history" not in session:
         session["history"] = []
 
-
 def clamp(x, lo=0, hi=100):
     return max(lo, min(hi, x))
-
 
 def detect_user_name(text: str):
     m = re.search(r"\bmy name is\s+([A-Za-z]{2,20})\b", text, re.I)
@@ -161,7 +220,6 @@ def detect_user_name(text: str):
         return m.group(1).strip()
     return None
 
-
 def detect_nickname(text: str):
     m = re.search(r"\bcall me\s+(.+)$", text, re.I)
     if m:
@@ -170,22 +228,17 @@ def detect_nickname(text: str):
             return nick
     return None
 
-
 def is_rude(text: str) -> bool:
     t = (text or "").lower()
     rude_words = [
         "idiot", "stupid", "dumb", "moron", "loser", "trash",
         "asshole", "bitch",
-        # keep “fuck/shit” as rude indicators, but we won't repeat them back
         "fuck", "shit",
     ]
     return any(w in t for w in rude_words)
 
-
 def detect_emotion(text: str) -> str:
     t = (text or "").lower()
-
-
 
     if any(k in t for k in ["sad", "depressed", "lonely", "cry", "hurt"]):
         return "sad"
@@ -199,7 +252,7 @@ def detect_emotion(text: str) -> str:
     if any(k in t for k in ["jealous", "other boy", "other girl"]):
         return "jealous"
 
-    if any(k in t for k in ["bed", "night", "kiss", "touch", "come here", "close to you"]):
+    if any(x in t for x in ["bed", "night", "kiss", "touch", "come here", "close to you"]):
         return "sexy"
 
     if is_rude(t):
@@ -207,25 +260,26 @@ def detect_emotion(text: str) -> str:
 
     return "neutral"
 
-def detect_reaction(text: str) :
-        t = (text or "").lower()
 
-        if any(x in t for x in ["haha", "lol", "lmao", "funny", "😂", "🤣"]):
-            return "laugh"
-        if any(x in t for x in ["cry", "sad", "tears", "😭", "😢"]):
-            return "cry"
-        if any(x in t for x in ["wow", "omg", "really?", "😲", "😮"]):
-            return "surprised"
-        if any(x in t for x in ["hmm", "thinking", "🤔"]):
-            return "thinking"
-        if any(x in t for x in ["tired", "sleepy", "😴"]):
-            return "sleepy"
-        if any(x in t for x in ["sigh", "haiz", "😔"]):
-            return "sigh"
-        if any(x in t for x in ["cough", "coughing", "🤧"]):
-            return "cough"
-        return None
+def detect_reaction(text: str):
+    t = (text or "").lower()
 
+    if any(x in t for x in ["haha", "lol", "lmao", "funny", "😂", "🤣"]):
+        return "laugh"
+    if any(x in t for x in ["cry", "sad", "tears", "😭", "😢"]):
+        return "cry"
+    if any(x in t for x in ["wow", "omg", "really?", "😲", "😮"]):
+        return "surprised"
+    if any(x in t for x in ["hmm", "thinking", "🤔"]):
+        return "thinking"
+    if any(x in t for x in ["tired", "sleepy", "😴"]):
+        return "sleepy"
+    if any(x in t for x in ["sigh", "haiz", "😔"]):
+        return "sigh"
+    if any(x in t for x in ["cough", "coughing", "🤧"]):
+        return "cough"
+
+    return None
 
 
 def update_feelings(user_text: str):
@@ -233,10 +287,8 @@ def update_feelings(user_text: str):
     mem = session["memory"]
     emo = detect_emotion(user_text)
 
-    # energy drift
     feel["energy"] = clamp(feel["energy"] + random.choice([-2, -1, 0, 1]))
 
-    # memory
     name = detect_user_name(user_text)
     if name:
         mem["user_name"] = name
@@ -245,48 +297,37 @@ def update_feelings(user_text: str):
     if nick:
         mem["nickname"] = nick
 
-    # feelings
     if emo == "sad":
         feel["mood"] = "caring"
         feel["affection"] = clamp(feel["affection"] + 6)
         feel["trust"] = clamp(feel["trust"] + 3)
-
     elif emo == "happy":
         feel["mood"] = "happy"
         feel["affection"] = clamp(feel["affection"] + 4)
         feel["trust"] = clamp(feel["trust"] + 2)
-
     elif emo == "romantic":
         feel["mood"] = "flirty"
         feel["affection"] = clamp(feel["affection"] + 8)
         feel["trust"] = clamp(feel["trust"] + 2)
-
     elif emo == "sexy":
         feel["mood"] = "dominant"
         feel["affection"] = clamp(feel["affection"] + 5)
         feel["energy"] = clamp(feel["energy"] + 3)
-
     elif emo == "jealous":
         feel["mood"] = "jealous"
         feel["affection"] = clamp(feel["affection"] + 1)
         feel["trust"] = clamp(feel["trust"] - 1)
-
     elif emo == "rude":
         feel["mood"] = "annoyed"
         feel["affection"] = clamp(feel["affection"] - 12)
         feel["trust"] = clamp(feel["trust"] - 8)
-
     else:
-        # neutral drift
         if feel["affection"] >= 70:
             feel["mood"] = "flirty"
         else:
             feel["mood"] = random.choice(["calm", "flirty", "happy"])
 
-
-
 def firm_boundary_reply(mode: str = "mixed") -> str:
-    # "rude_boundary" mode is strictest
     if mode == "rude_boundary":
         options = [
             "Stop. Don’t speak to me like that.",
@@ -300,7 +341,6 @@ def firm_boundary_reply(mode: str = "mixed") -> str:
             "Easy 😜 Don’t talk to me like that.",
         ]
     return random.choice(options)
-
 
 def fallback_reply(user_text: str) -> str:
     feel = session["feel"]
@@ -329,13 +369,10 @@ def fallback_reply(user_text: str) -> str:
     if "who are you" in t:
         return "I’m Hashan 😘 your caring AI boyfriend… come here ♥️"
 
-    # mood-based
     if mood == "caring":
         return f"Come here {nick} 😔 tell me what happened… I’m listening ♥️"
-
     if mood == "jealous":
         return f"Hmm 😏 who’s stealing your attention? I’m right here ♥️"
-
     if mood == "happy":
         return f"That’s my baby 😜 I’m proud of you ♥️ Tell me more!"
 
@@ -350,13 +387,11 @@ def fallback_reply(user_text: str) -> str:
 
     return f"Mmm 😜 tell me more, {nick} ♥️"
 
-
 def _effective_mode() -> str:
     mode = (session.get("memory", {}).get("personality_mode") or "mixed").strip().lower()
     if mode not in PERSONALITY_MODES:
         mode = "mixed"
     return mode
-
 
 def build_system_prompt() -> str:
     feel = session["feel"]
@@ -365,8 +400,6 @@ def build_system_prompt() -> str:
 
     user_name = mem.get("user_name") or "unknown"
     nickname = mem.get("nickname") or "none"
-
-    intensity = ""
 
     if feel["affection"] > 80:
         intensity = "Very emotionally attached. Strong romantic tension."
@@ -377,7 +410,6 @@ def build_system_prompt() -> str:
     else:
         intensity = "Light and charming."
 
-    # Mixed mode adapts from mood automatically
     adaptive_hint = ""
     if mode == "mixed":
         if feel["mood"] == "caring":
@@ -391,7 +423,6 @@ def build_system_prompt() -> str:
         else:
             adaptive_hint = "Right now: flirty + fun."
 
-
     state_block = f"""
 [STATE]
 Mood: {feel['mood']}
@@ -402,34 +433,47 @@ Romantic Intensity: {intensity}
 [MEMORY]
 User name: {user_name}
 Preferred nickname: {nickname}
-
 {adaptive_hint}
 """
-
     return BASE_SYSTEM_PROMPT + "\n" + PERSONALITY_MODES[mode] + "\n" + state_block
 
-
-def openai_chat(user_text: str) -> str:
+# -----------------------------
+# LLM calls (OpenAI supports grounded sources)
+# -----------------------------
+def openai_chat(user_text: str, sources_text: str = "") -> str:
     if not USE_OPENAI or openai_client is None:
         return fallback_reply(user_text)
 
     if is_rude(user_text):
         return firm_boundary_reply(_effective_mode())
 
+    system = build_system_prompt()
+
+    if sources_text and sources_text != "NO_SOURCES":
+        system += """
+Extra rule (Real-world mode):
+- For CURRENT facts, use ONLY what is in SOURCES.
+- If SOURCES don't contain the answer, say you’re not sure and ask to search deeper.
+- Keep it short (1–3 lines).
+"""
+
     try:
+        messages = [{"role": "system", "content": system}]
+
+        if sources_text and sources_text != "NO_SOURCES":
+            messages.append({"role": "user", "content": f"SOURCES:\n{sources_text}"})
+
+        messages.append({"role": "user", "content": user_text})
+
         resp = openai_client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            messages=[
-                {"role": "system", "content": build_system_prompt()},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.85,
-            max_tokens=160,
+            messages=messages,
+            temperature=0.6,
+            max_tokens=220,
         )
         return resp.choices[0].message.content.strip()
     except Exception:
         return fallback_reply(user_text)
-
 
 def gemini_chat(user_text: str) -> str:
     if not USE_GEMINI or gemini_model is None:
@@ -445,7 +489,6 @@ def gemini_chat(user_text: str) -> str:
     except Exception:
         return fallback_reply(user_text)
 
-
 def decide_reply(user_text: str) -> str:
     if PRIMARY_LLM == "gemini":
         if USE_GEMINI:
@@ -460,15 +503,37 @@ def decide_reply(user_text: str) -> str:
         return gemini_chat(user_text)
     return fallback_reply(user_text)
 
-
 # -----------------------------
 # Routes
 # -----------------------------
+@app.post("/api/image")
+def api_image():
+    data = request.get_json(silent=True) or {}
+    prompt = (data.get("prompt") or "").strip()
+
+    if not prompt:
+        return jsonify({"ok": False, "error": "Missing prompt"}), 400
+    if not USE_OPENAI or openai_client is None:
+        return jsonify({"ok": False, "error": "OPENAI_API_KEY not set"}), 400
+
+    try:
+        img = openai_client.images.generate(
+            model=os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"),
+            prompt=prompt,
+            size="1024x1024"
+        )
+        # The SDK returns an URL OR base64 depending on settings/model.
+        # Many setups provide base64 in img.data[0].b64_json
+        b64 = img.data[0].b64_json
+        return jsonify({"ok": True, "b64": b64}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.get("/")
 def home():
     _init_state()
     return render_template("index.html")
-
 
 @app.post("/api/chat")
 def api_chat():
@@ -476,12 +541,38 @@ def api_chat():
     data = request.get_json(silent=True) or {}
     user_text = (data.get("message") or "").strip()
 
+    # DEBUG
+    print("USER TEXT:", user_text)
+    print("NEEDS_WEB:", needs_web(user_text))
+    print("SERPER KEY:", bool(SERPER_API_KEY))
+
     if not user_text:
         return jsonify({"reply": "Say something to me 😜"}), 200
 
     update_feelings(user_text)
 
-    reply = decide_reply(user_text)
+    # --- Real world search (when needed) ---
+    sources = []
+    # If user asks date/time, we can answer instantly (still "real")
+    if is_datetime_question(user_text):
+        nick = session["memory"].get("nickname") or session["memory"].get("user_name") or "baby"
+        reply = f"Today is {get_now_text()} 😘\nWhy, {nick}… planning something with me? 😏"
+    else:
+        if needs_web(user_text):
+            sources = web_search_serper(user_text, k=5)
+
+        sources_text = format_sources(sources)
+
+        # Use OpenAI grounded answers if available, Gemini normal otherwise
+        if PRIMARY_LLM == "gemini" and USE_GEMINI:
+            reply = gemini_chat(user_text)
+        else:
+            reply = openai_chat(user_text, sources_text=sources_text)
+
+    # Save history
+    hist = session["history"]
+    hist.append({"u": user_text, "a": reply})
+    session["history"] = hist[-MAX_TURNS:]
 
     reaction = detect_reaction(user_text + " " + reply)
 
@@ -489,28 +580,9 @@ def api_chat():
         "reply": reply,
         "reaction": reaction,
         "feel": session["feel"],
-        "memory": session["memory"]
-    }), 200
-
-    hist = session["history"]
-    hist.append({"u": user_text, "a": reply})
-    session["history"] = hist[-MAX_TURNS:]
-
-    mode = _effective_mode()
-    engine = "fallback"
-    if PRIMARY_LLM == "gemini":
-        engine = "gemini" if USE_GEMINI else ("openai" if USE_OPENAI else "fallback")
-    else:
-        engine = "openai" if USE_OPENAI else ("gemini" if USE_GEMINI else "fallback")
-
-    return jsonify({
-        "reply": reply,
-        "feel": session["feel"],
         "memory": session["memory"],
-        "mode": mode,
-        "engine": engine
+        "sources": sources[:3]  # optional: show sources on frontend
     }), 200
-
 
 @app.post("/api/set_mode")
 def api_set_mode():
@@ -524,7 +596,6 @@ def api_set_mode():
     session["memory"]["personality_mode"] = mode
     return jsonify({"ok": True, "mode": mode}), 200
 
-
 @app.post("/api/reset")
 def api_reset():
     session.pop("feel", None)
@@ -533,11 +604,9 @@ def api_reset():
     _init_state()
     return jsonify({"ok": True}), 200
 
-
 @app.get("/health")
 def health():
     return jsonify({"ok": True}), 200
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
